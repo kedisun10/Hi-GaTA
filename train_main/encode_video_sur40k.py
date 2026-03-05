@@ -95,7 +95,7 @@ def extract_video_feature(
     for start_sec, end_sec in win_secs:
         start_idx = int(round(start_sec * fps))
         end_idx = int(round(end_sec * fps))
-        end_idx = max(end_idx, start_idx + 1)  # 至少包含1帧
+        end_idx = max(end_idx, start_idx + 1)  
         idx = np.linspace(start_idx, end_idx - 1, clip_len).astype(np.int64)
         idx = np.clip(idx, 0, total_frames - 1)
         indices_list.append(idx)
@@ -128,9 +128,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--video-csv', type=str, default='', help='CSV')
     parser.add_argument('--ckpt', type=str, default='', help='weight path')
-    parser.add_argument('--save-dir', type=str, default='video_feature/vitb16_sur40k_v1', help='save path')
+    parser.add_argument('--save-dir', type=str, default='', help='save path')
     parser.add_argument('--clip-len', type=int, default=16, help='The number of frames uniformly sampled per window')
-    parser.add_argument('--clip-secs', type=float, default=4.0, help='Sliding window length（秒）')
+    parser.add_argument('--clip-secs', type=float, default=4.0, help='Sliding window length')
     parser.add_argument('--overlap', type=float, default=0.0, help='Overlap ratio of sliding windows')
     parser.add_argument('--size', type=int, default=224, help='resize size')
     parser.add_argument('--batch-size', type=int, default=16)

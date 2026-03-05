@@ -22,23 +22,22 @@ from transformers import (
 )
 hf_logging.set_verbosity_error()
 
-# -------------------- 默认配置 --------------------
+# -------------------- config --------------------
 # Qwen/Qwen2.5-3B-Instruct
 # Qwen/Qwen2.5-1.5B-Instruct
 # meta-llama/Llama-3.2-1B-Instruct
 # meta-llama/Llama-3.2-3B-Instruct
 # google/gemma-2-2b-it
-DEFAULT_MODEL = ""
-FEATURE_DIR = ""
-REPORT_CSV = ""
-OUT_DIR = ""
 
+DEFAULT_MODEL = " "
+FEATURE_DIR = " "
+REPORT_CSV = " "
+OUT_DIR = " "
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 PROMPT_TEMPLATE = (
-   )
+    )
 
-# -------------------- 工具函数 --------------------
 def set_seed(seed: int = 42):
     random.seed(seed)
     np.random.seed(seed)
@@ -47,11 +46,7 @@ def set_seed(seed: int = 42):
         torch.cuda.manual_seed_all(seed)
 
 def read_reports(csv_path: str) -> Dict[str, str]:
-    """
-    :param csv_path: 第一列表头应为'video' 或'id'，第二列表头应改由'free'开始
-    :return:{视频id：文本}的映射
-    """
-    import csv
+
     res = {}
     with open(csv_path, 'r', encoding='utf-8') as f:
         sample = f.read(4096)
@@ -71,7 +66,6 @@ def read_reports(csv_path: str) -> Dict[str, str]:
             res[vid] = txt
     return res
 
-# -------------------- 模块定义 --------------------
 class FeatureReportDataset(Dataset):
 
     def __init__(self, feature_dir: str, report_map: Dict[str, str], tokenizer, prompt_template: str,
@@ -109,7 +103,6 @@ class FeatureReportDataset(Dataset):
             feat_t = feat_t + torch.randn_like(feat_t) * self.aug_noise_std
         sample["feat_seq"] = feat_t
 
-        # 文本部分
         report_text = self.report_map[vid]
         prompt_text = self.prompt_template.format(video_id=vid)
         full_text = prompt_text + report_text
@@ -129,7 +122,7 @@ class BatchCollator:
         self.pad_token_id = pad_token_id
 
     def __call__(self, batch):
-        # ---- 文本对齐 ----
+
         B = len(batch)
         input_ids_list = [b["input_ids"] for b in batch]
         lengths = [x.size(0) for x in input_ids_list]
@@ -147,8 +140,6 @@ class BatchCollator:
             "prompt_lens": prompt_lens
         }
 
-        # ---- 视觉特征对齐（序列特征） ----
-        # 时序：pad 到同一时间长度 -> [B, S_max, D] + mask [B, S_max]
         seqs = [b["feat_seq"] for b in batch]          # list of [S_i, D]
         S_max = max(x.size(0) for x in seqs)
         D = seqs[0].size(1)
@@ -164,14 +155,13 @@ class BatchCollator:
         return out
 
 
-# -------------------- 训练/验证 --------------------
+# -------------------- train/val --------------------
 def compute_loss_with_label_smoothing(logits, labels, label_smoothing: float, ignore_index: int = -100):
     """
     logits: [B, T, V]
-    labels: [B, T]  （与 logits 对齐，但会在内部 shift）
+    labels: [B, T]  
     """
     vocab_size = logits.size(-1)
-    # causal LM: 预测位置 t 的目标是 t+1 的 token
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
 
@@ -182,11 +172,10 @@ def compute_loss_with_label_smoothing(logits, labels, label_smoothing: float, ig
 def build_inputs_hpta_from_seq(hpta_pooler, hpta, llm, tokenizer,
                               batch, device, prefix_tokens: int, ignore_index: int = -100):
     """
-    使用真实时序特征:
-      输入：
+      input：
         - batch["feat_seq"]      : [B, S_max, D]
-        - batch["feat_seq_mask"] : [B, S_max] (True=有效)
-      输出：
+        - batch["feat_seq_mask"] : [B, S_max] 
+      otput：
         - inputs_embeds, attn_mask, labels, prefix_emb, token_embeds
     """
     vis_seq = batch["feat_seq"].to(device).float()           # [B, S_max, D]
@@ -197,7 +186,7 @@ def build_inputs_hpta_from_seq(hpta_pooler, hpta, llm, tokenizer,
     prompt_lens = batch["prompt_lens"].to(device)            # [B]
     B, Lmax = input_ids.size()
 
-    # 1) 文本嵌入（仅用 prompt 段作为条件）
+    # 1) PROMPT
     with torch.no_grad():
         token_embeds = llm.get_input_embeddings()(input_ids)  # [B, Lmax, H]
         max_p = prompt_lens.max().item()
@@ -206,15 +195,15 @@ def build_inputs_hpta_from_seq(hpta_pooler, hpta, llm, tokenizer,
             p = prompt_lens[i].item()
             txt_tokens[i, :p, :] = token_embeds[i, :p, :]
 
-    # 2) 多尺度池化（带 mask）
+    # 2) PTT
     vis_scales, vis_masks = hpta_pooler(vis_seq, vis_mask)     # lists: [ [B,Ss,D] , ... ], [ [B,Ss], ... ]
 
-    # 3) HPTA 汇聚（带 mask）
+    # 3) HPTA 
     prefix_emb = hpta(vis_scales, txt_tokens, vis_attn_masks=vis_masks)  # [B, P, H]
     assert prefix_emb.size(1) == prefix_tokens, \
-        f"prefix_tokens={prefix_tokens} 必须等于 n_scales * queries_per_scale"
+        f"prefix_tokens={prefix_tokens} must equal n_scales * queries_per_scale"
 
-    # 4) 与文本拼接、构造 mask/labels
+    # 4) CONCATINATE
     dtype = token_embeds.dtype
     inputs_embeds = torch.cat([prefix_emb.to(dtype), token_embeds], dim=1)  # [B, P+Lmax, H]
 
@@ -231,14 +220,10 @@ def build_inputs_hpta_from_seq(hpta_pooler, hpta, llm, tokenizer,
     return inputs_embeds, attn_mask, labels, prefix_emb, token_embeds
 
 def train_loop(hpta_pooler, hpta, llm, tokenizer, train_loader, val_loader, args):
-    """
-    训练/验证主循环：
-      使用时序特征 + HPTA 多尺度池化 + 聚合
-    """
-    llm.eval()  # 始终冻结 LLM
+
+    llm.eval()  
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # ---- 优化器设置 ----
     hpta_params = list(hpta.parameters())
     trainable_params = hpta_params
     optimizer = AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
@@ -248,7 +233,7 @@ def train_loop(hpta_pooler, hpta, llm, tokenizer, train_loader, val_loader, args
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=total_steps
     )
 
-    # ---- 日志文件 ----
+
     loss_csv_path = os.path.join(args.out_dir, "log.csv")
     if not os.path.exists(loss_csv_path):
         with open(loss_csv_path, mode="w", newline="", encoding="utf-8") as f:
@@ -261,7 +246,7 @@ def train_loop(hpta_pooler, hpta, llm, tokenizer, train_loader, val_loader, args
     last_path_hpta = os.path.join(args.out_dir, "last_hpta.pt")
 
     for epoch in range(1, args.epochs + 1):
-        # ---- 训练阶段 ----
+
         hpta.train()
 
         pbar = tqdm(train_loader, desc=f"Train epoch {epoch}/{args.epochs}")
@@ -271,7 +256,7 @@ def train_loop(hpta_pooler, hpta, llm, tokenizer, train_loader, val_loader, args
             optimizer.zero_grad(set_to_none=True)
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                # 时序特征 + mask
+
                 inputs_embeds, attn_mask, labels, prefix_emb, token_emb = build_inputs_hpta_from_seq(
                     hpta_pooler, hpta, llm, tokenizer, batch, args.device, args.prefix_tokens
                 )
@@ -285,7 +270,7 @@ def train_loop(hpta_pooler, hpta, llm, tokenizer, train_loader, val_loader, args
                 loss = compute_loss_with_label_smoothing(
                     outputs.logits, labels, args.label_smoothing
                 )
-                # 前缀范数正则
+
                 norm_loss = (prefix_emb ** 2).mean()
                 loss = loss + args.prefix_norm_lambda * norm_loss
 
@@ -308,9 +293,7 @@ def train_loop(hpta_pooler, hpta, llm, tokenizer, train_loader, val_loader, args
 
         avg_train = running / max(1, len(train_loader))
 
-        # ---- 验证阶段 ----
         hpta.eval()
-
         val_total = 0.0
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validate", leave=False):
@@ -333,12 +316,10 @@ def train_loop(hpta_pooler, hpta, llm, tokenizer, train_loader, val_loader, args
         avg_val = val_total / max(1, len(val_loader))
         print(f"[Epoch {epoch}] Train Loss: {avg_train:.4f}  Val Loss: {avg_val:.4f}")
 
-        # ---- 记录日志 ----
         with open(loss_csv_path, mode="a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([epoch, f"{avg_train:.6f}", f"{avg_val:.6f}"])
 
-        # ---- 保存权重 ----
         torch.save({"hpta": hpta.state_dict()}, last_path_hpta)
 
         if avg_val < best_val:
@@ -373,14 +354,11 @@ def main():
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--early_stop_patience", type=int, default=5)
     parser.add_argument("--warmup_steps", type=int, default=100)
-    parser.add_argument("--prefix_norm_lambda", type=float, default=2e-2, help='启用prefix_token范数正则时的λ')
-
-    # 数据增强
+    parser.add_argument("--prefix_norm_lambda", type=float, default=2e-2, help='λ')
     parser.add_argument("--aug_noise_std", type=float, default=0.01)
 
-    # HPTA参数
-    parser.add_argument("--hpta_q_per_scale", type=int, default=4)  # 每尺度的查询数
-    parser.add_argument("--hpta_scales", type=str, default="2,4,6,8")  # 多尺度窗口
+    parser.add_argument("--hpta_q_per_scale", type=int, default=4) 
+    parser.add_argument("--hpta_scales", type=str, default="2,4,6,8")  
     parser.add_argument("--hpta_heads", type=int, default=8)
     parser.add_argument("--hpta_dropout", type=float, default=0.1)
 
@@ -392,8 +370,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
     model = AutoModelForCausalLM.from_pretrained(args.model)
     model.to(args.device)
-    model.eval() # eval模式，冻结LLM
-    # Llama的架构中是不带pad token的，为了对齐batch长度，使用eos token来代替pad token
+    model.eval() 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     for p in model.parameters():
@@ -402,7 +379,6 @@ def main():
     report_map = read_reports(args.report_csv)
     print(f"Loaded {len(report_map)} reports")
 
-    # 数据集构建
     full_dataset = FeatureReportDataset(
         args.feature_dir, report_map, tokenizer, PROMPT_TEMPLATE, args.max_tokens,
         augment=True, aug_noise_std=args.aug_noise_std
@@ -413,7 +389,7 @@ def main():
 
     split_idx = int(0.8 * len(full_dataset))
     train_subset = torch.utils.data.Subset(full_dataset, range(split_idx))
-    # 验证集禁用增强：用相同Dataset类但augment=False
+
     val_dataset = FeatureReportDataset(
         args.feature_dir, read_reports(args.report_csv), tokenizer, PROMPT_TEMPLATE, args.max_tokens,
         augment=False, aug_noise_std=0.0
@@ -422,25 +398,23 @@ def main():
 
     print(f"Train/Val split: {len(train_subset)}/{len(val_subset)}")
 
-    # 探测 feat_dim（时序特征的特征维度 D）
+
     sample_path = Path(args.feature_dir) / f"{full_dataset.video_ids[0]}.npy"
     sample_feat = np.load(str(sample_path))
     assert sample_feat.ndim == 2, f"Expected 2D features [S, D], got {sample_feat.ndim}D"
     feat_dim = int(sample_feat.shape[1])
     llm_hidden = model.config.hidden_size
 
-    # === HPTA 模块（仅支持序列特征） ===
-    # 解析窗口
+    # === HPTA ===
     win_sizes = tuple(int(x) for x in args.hpta_scales.split(","))
     n_scales = len(win_sizes)
-    # P = n_scales * queries_per_scale 必须等于 prefix_tokens
-    assert n_scales * args.hpta_q_per_scale == args.prefix_tokens, \
-        "prefix_tokens 必须等于 n_scales × queries_per_scale，例如 3×4=12"
 
-    # 构建 TPP（多尺度时间池化）
+    assert n_scales * args.hpta_q_per_scale == args.prefix_tokens, \
+        "prefix_tokens must equal n_scales × queries_per_scale "
+
     hpta_pooler = TemporalPyramidPooling(window_sizes=win_sizes, stride_factor=0.5)
 
-    # 构建 HPTA 聚合器
+    # HPTA 
     hpta = HierarchicalAggregator(
         vis_dim=feat_dim, hidden=llm_hidden,
         n_levels=n_scales,

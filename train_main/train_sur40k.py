@@ -33,9 +33,6 @@ def set_seed(seed: int):
 
 
 def read_csv_paths(csv_path: str) -> List[str]:
-    """
-    Should be the local path of Bulebear file
-    """
     import csv as _csv, gzip, re
 
     def _normalize_path(p: str) -> str:

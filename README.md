@@ -22,7 +22,7 @@ Hi-GaTA/
 
 ```
 
-### Requirements
+## Requirements
 python >= 3.11
 torch == 2.7.1
 torchaudio == 2.7.1
